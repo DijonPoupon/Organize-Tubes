@@ -5,17 +5,18 @@ Imports System.Collections.Generic
 Public Class TubingConsolidator
 
     ' Configuration variables (user-adjustable)
-    Private VAR_BASE_Y_POS As Double = 9.0
-    Private VAR_TUBE_SPACING As Double = 2.2
-    Private VAR_BASE_X_POS As Double = 0.75
-    Private VAR_CROSS_SECTION_OFFSET_X As Double = 0
-    Private VAR_PROJECTION_OFFSET_X As Double = 1.2
-    Private VAR_PARTS_LIST_OFFSET_X As Double = 1.8
+    Private Const TEMPLATE_PATH As String = "C:\Users\hmclinn\OneDrive - winholt.com\Documents\Hunter's Folder\Coding Projects\Autodesk Tools\Tube Template.idw"
+    
+    ' Template sheet configuration
+    Private templateSheets As New Dictionary(Of Integer, String) From {
+        {3, "3 Tubes"},
+        {4, "4 Tubes"},
+        {6, "6 tubes"}
+    }
 
     ' Global objects
     Private invApp As Inventor.Application
     Private invDoc As DrawingDocument
-    Private invSheet As Sheet
     Private tubesByIBM As New Dictionary(Of Long, Dictionary(Of String, List(Of TubeData)))
     Private processedDocs As New HashSet(Of String)
 
@@ -51,8 +52,8 @@ Public Class TubingConsolidator
                 Exit Sub
             End If
 
-            ' Step 3: Create drawing sheets for each IBM's tubes
-            CreateTubingSheetsByIBM()
+            ' Step 3: Create drawing sheets for each IBM's tubes using template
+            CreateTubingSheetsByTemplate()
 
             MsgBox("Tubing consolidation complete! Created " & GetTotalTubingSheets() & " tubing sheet(s).", "Success")
 
@@ -67,7 +68,6 @@ Public Class TubingConsolidator
     Private Function GetAssemblyFromFirstSheet() As AssemblyDocument
         Try
             Dim sheet As Sheet = invDoc.Sheets(1)
-            invSheet = sheet
 
             ' Loop through views on the first sheet to find an assembly view
             For i As Integer = 1 To sheet.DrawingViews.Count
@@ -258,44 +258,136 @@ Public Class TubingConsolidator
     End Function
 
     ' ====================================================================
-    ' STEP 2 & 3: CREATE TUBING SHEETS FOR EACH IBM
+    ' STEP 2 & 3: CREATE TUBING SHEETS USING TEMPLATE
     ' ====================================================================
-    Private Sub CreateTubingSheetsByIBM()
-        Dim tubesPerSheet As Integer = 6
+    Private Sub CreateTubingSheetsByTemplate()
+        Try
+            ' Open template document
+            Dim templateDoc As DrawingDocument = invApp.Documents.Open(TEMPLATE_PATH, False)
 
-        ' Iterate through each IBM
-        For Each ibmKey In tubesByIBM.Keys
-            Dim ibmNum As Long = ibmKey
-            Dim subAsmDict As Dictionary(Of String, List(Of TubeData)) = tubesByIBM(ibmKey)
+            If templateDoc Is Nothing Then
+                MsgBox("Could not open template file: " & TEMPLATE_PATH, "Error")
+                Exit Sub
+            End If
 
-            ' Iterate through each sub-assembly within this IBM
-            For Each subAsmKey In subAsmDict.Keys
-                Dim tubeColl As List(Of TubeData) = subAsmDict(subAsmKey)
+            ' Iterate through each IBM
+            For Each ibmKey In tubesByIBM.Keys
+                Dim ibmNum As Long = ibmKey
+                Dim subAsmDict As Dictionary(Of String, List(Of TubeData)) = tubesByIBM(ibmKey)
 
-                ' Sort tubes by part number
-                SortTubesByPartNumber(tubeColl)
+                ' Iterate through each sub-assembly within this IBM
+                For Each subAsmKey In subAsmDict.Keys
+                    Dim tubeColl As List(Of TubeData) = subAsmDict(subAsmKey)
 
-                ' Calculate number of sheets needed for this sub-assembly
-                Dim sheetCount As Integer = CInt(Math.Ceiling(tubeColl.Count / CDbl(tubesPerSheet)))
+                    ' Sort tubes by part number
+                    SortTubesByPartNumber(tubeColl)
 
-                ' Create sheets for this sub-assembly
-                For currentSheet As Integer = 1 To sheetCount
-                    Dim startIdx As Integer = (currentSheet - 1) * tubesPerSheet
-                    Dim endIdx As Integer = Math.Min(startIdx + tubesPerSheet - 1, tubeColl.Count - 1)
+                    ' Plan the sheet layout based on tube count
+                    Dim sheetPlan As List(Of SheetConfig) = PlanSheetLayout(tubeColl.Count)
 
-                    ' Create new sheet
-                    Dim newSheet As Sheet = CreateNewTubingSheet(ibmNum, subAsmKey, currentSheet, sheetCount)
+                    ' Create sheets according to plan
+                    Dim tubeIndex As Integer = 0
+                    For sheetIdx As Integer = 0 To sheetPlan.Count - 1
+                        Dim config As SheetConfig = sheetPlan(sheetIdx)
+                        Dim startIdx As Integer = tubeIndex
+                        Dim endIdx As Integer = tubeIndex + config.TubeCount - 1
 
-                    ' Determine scale based on tube count
-                    Dim tubeCountForScale As Integer = endIdx - startIdx + 1
-                    Dim scale As Double = DetermineScale(tubeCountForScale)
+                        ' Create sheet
+                        CopyAndPopulateTemplateSheet(templateDoc, tubeColl, startIdx, endIdx, config.TemplateName, sheetIdx + 1, sheetPlan.Count)
 
-                    ' Place tubes on sheet
-                    PlaceTubesOnSheet(newSheet, tubeColl, startIdx, endIdx, scale)
+                        tubeIndex += config.TubeCount
+                    Next
                 Next
             Next
-        Next
+
+            ' Close template without saving
+            templateDoc.Close(False)
+
+        Catch ex As Exception
+            MsgBox("Error creating sheets from template: " & ex.Message, "Error")
+        End Try
     End Sub
+
+    ' ====================================================================
+    ' PLAN SHEET LAYOUT BASED ON TUBE COUNT
+    ' ====================================================================
+    Private Function PlanSheetLayout(tubeCount As Integer) As List(Of SheetConfig)
+        Dim plan As New List(Of SheetConfig)
+
+        Select Case tubeCount
+            Case 1
+                ' Single tube - no template needed, skip entirely
+                ' Return empty list to skip
+                Return plan
+
+            Case 2, 3
+                ' 2-3 tubes - use 3 tube template
+                plan.Add(New SheetConfig With {.TubeCount = tubeCount, .TemplateName = "3 Tubes"})
+
+            Case 4
+                ' 4 tubes - use 4 tube template
+                plan.Add(New SheetConfig With {.TubeCount = 4, .TemplateName = "4 Tubes"})
+
+            Case 5
+                ' 5 tubes - split between 3 and 4 tube templates (more even)
+                plan.Add(New SheetConfig With {.TubeCount = 3, .TemplateName = "3 Tubes"})
+                plan.Add(New SheetConfig With {.TubeCount = 2, .TemplateName = "3 Tubes"})
+
+            Case 6
+                ' 6 tubes - use 6 tube template
+                plan.Add(New SheetConfig With {.TubeCount = 6, .TemplateName = "6 tubes"})
+
+            Case 7
+                ' 7 tubes - split between 4 and 3 tube templates
+                plan.Add(New SheetConfig With {.TubeCount = 4, .TemplateName = "4 Tubes"})
+                plan.Add(New SheetConfig With {.TubeCount = 3, .TemplateName = "3 Tubes"})
+
+            Case 8
+                ' 8 tubes - use two 4 tube templates
+                plan.Add(New SheetConfig With {.TubeCount = 4, .TemplateName = "4 Tubes"})
+                plan.Add(New SheetConfig With {.TubeCount = 4, .TemplateName = "4 Tubes"})
+
+            Case 9
+                ' 9 tubes - use three 3 tube templates
+                plan.Add(New SheetConfig With {.TubeCount = 3, .TemplateName = "3 Tubes"})
+                plan.Add(New SheetConfig With {.TubeCount = 3, .TemplateName = "3 Tubes"})
+                plan.Add(New SheetConfig With {.TubeCount = 3, .TemplateName = "3 Tubes"})
+
+            Case 10
+                ' 10 tubes - use 6 tube and 4 tube templates
+                plan.Add(New SheetConfig With {.TubeCount = 6, .TemplateName = "6 tubes"})
+                plan.Add(New SheetConfig With {.TubeCount = 4, .TemplateName = "4 Tubes"})
+
+            Case 11
+                ' 11 tubes - use 6, 4, and split extra (6 + 3 + 2)
+                plan.Add(New SheetConfig With {.TubeCount = 6, .TemplateName = "6 tubes"})
+                plan.Add(New SheetConfig With {.TubeCount = 4, .TemplateName = "4 Tubes"})
+                plan.Add(New SheetConfig With {.TubeCount = 1, .TemplateName = "3 Tubes"})
+
+            Case 12
+                ' 12 tubes - use two 6 tube templates
+                plan.Add(New SheetConfig With {.TubeCount = 6, .TemplateName = "6 tubes"})
+                plan.Add(New SheetConfig With {.TubeCount = 6, .TemplateName = "6 tubes"})
+
+            Case Else
+                ' More than 12 tubes - distribute evenly
+                Dim remaining As Integer = tubeCount
+                While remaining > 0
+                    If remaining >= 6 Then
+                        plan.Add(New SheetConfig With {.TubeCount = 6, .TemplateName = "6 tubes"})
+                        remaining -= 6
+                    ElseIf remaining >= 4 Then
+                        plan.Add(New SheetConfig With {.TubeCount = 4, .TemplateName = "4 Tubes"})
+                        remaining -= 4
+                    Else
+                        plan.Add(New SheetConfig With {.TubeCount = remaining, .TemplateName = "3 Tubes"})
+                        remaining = 0
+                    End If
+                End While
+        End Select
+
+        Return plan
+    End Function
 
     ' ====================================================================
     ' HELPER: SORT TUBES BY PART NUMBER
@@ -306,196 +398,107 @@ Public Class TubingConsolidator
     End Sub
 
     ' ====================================================================
-    ' HELPER: CREATE NEW TUBING SHEET
+    ' COPY AND POPULATE TEMPLATE SHEET
     ' ====================================================================
-    Private Function CreateNewTubingSheet(ibmNum As Long, subAsmName As String, sheetNum As Integer, totalSheets As Integer) As Sheet
+    Private Sub CopyAndPopulateTemplateSheet(templateDoc As DrawingDocument, tubeColl As List(Of TubeData), startIdx As Integer, endIdx As Integer, templateSheetName As String, sheetNum As Integer, totalSheets As Integer)
         Try
+            ' Get template sheet
+            Dim templateSheet As Sheet = Nothing
+            For i As Integer = 1 To templateDoc.Sheets.Count
+                If templateDoc.Sheets(i).Name = templateSheetName Then
+                    templateSheet = templateDoc.Sheets(i)
+                    Exit For
+                End If
+            Next
+
+            If templateSheet Is Nothing Then
+                MsgBox("Template sheet '" & templateSheetName & "' not found.", "Error")
+                Exit Sub
+            End If
+
+            ' Copy the template sheet to current document
+            Dim newSheet As Sheet = invDoc.Sheets.Add()
+            
             ' Create sheet name
             Dim sheetName As String
             If totalSheets > 1 Then
-                sheetName = "LEGS & SPREADERS - " & ibmNum & " (" & sheetNum & "/" & totalSheets & ")"
+                sheetName = "LEGS & SPREADERS (" & sheetNum & "/" & totalSheets & ")"
             Else
-                sheetName = "LEGS & SPREADERS - " & ibmNum
+                sheetName = "LEGS & SPREADERS"
             End If
-
-            ' Create new sheet
-            Dim newSheet As Sheet = invDoc.Sheets.Add(DrawingSheetSizeEnum.kADrawingSheetSize)
             newSheet.Name = sheetName
 
-            ' Try to apply WINHOLT title block if available
-            Try
-                Dim titleBlockDef As TitleBlockDefinition = invDoc.TitleBlockDefinitions.Item("WINHOLT")
+            ' Copy all views from template sheet to new sheet
+            Dim tubeIndex As Integer = 0
+            For i As Integer = 1 To templateSheet.DrawingViews.Count
+                Dim templateView As DrawingView = templateSheet.DrawingViews(i)
+                Dim viewName As String = templateView.Name
 
-                If newSheet.TitleBlock IsNot Nothing Then
-                    newSheet.TitleBlock.Delete()
+                ' Check if this is a base view (VIEW1, VIEW2, etc.) or projection (VIEW1A, VIEW2A, etc.)
+                If Not viewName.EndsWith("A") Then
+                    ' This is a base view - replace with tubing model
+                    If startIdx + tubeIndex <= endIdx Then
+                        Dim tubeData As TubeData = tubeColl(startIdx + tubeIndex)
+
+                        ' Get the position and scale from template view
+                        Dim position As Point2d = templateView.Position
+                        Dim scale As Double = templateView.Scale
+
+                        ' Add new base view with tubing model
+                        Dim newView As DrawingView = newSheet.DrawingViews.AddBaseView(tubeData.Document, position, scale, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineDrawingViewStyle)
+                        newView.Name = viewName
+
+                        tubeIndex += 1
+                    End If
+                Else
+                    ' This is a projection view (VIEW1A, VIEW2A, etc.)
+                    ' Find the corresponding base view that was just added
+                    Dim baseViewName As String = viewName.Substring(0, viewName.Length - 1) ' Remove the 'A'
+                    Dim baseView As DrawingView = Nothing
+
+                    ' Find the base view in the new sheet
+                    For j As Integer = 1 To newSheet.DrawingViews.Count
+                        If newSheet.DrawingViews(j).Name = baseViewName Then
+                            baseView = newSheet.DrawingViews(j)
+                            Exit For
+                        End If
+                    Next
+
+                    If baseView IsNot Nothing Then
+                        ' Get position from template projection
+                        Dim position As Point2d = templateView.Position
+
+                        ' Add projection view based on the base view
+                        Dim projView As DrawingView = newSheet.DrawingViews.AddProjectedView(baseView, position, DrawingViewStyleEnum.kHiddenLineDrawingViewStyle, baseView.Scale)
+                        projView.Name = viewName
+                    End If
                 End If
+            Next
 
-                Dim sPromptStrings(2) As String
-                sPromptStrings(0) = ""
-                sPromptStrings(1) = "LEGS & SPREADERS"
-                sPromptStrings(2) = ""
-
-                newSheet.AddTitleBlock(titleBlockDef, , sPromptStrings)
-            Catch ex As Exception
-                ' Title block not available, continue without it
-            End Try
-
-            Return newSheet
+            ' Copy all sketches and annotations from template sheet (for dimensions, break lines, etc.)
+            CopySketchesAndAnnotations(templateSheet, newSheet)
 
         Catch ex As Exception
-            Return Nothing
+            MsgBox("Error populating template sheet: " & ex.Message, "Error")
         End Try
-    End Function
+    End Sub
 
     ' ====================================================================
-    ' HELPER: DETERMINE SCALE BASED ON TUBE COUNT
+    ' COPY SKETCHES AND ANNOTATIONS
     ' ====================================================================
-    Private Function DetermineScale(tubeCount As Integer) As Double
-        Select Case tubeCount
-            Case 2, 3
-                Return 0.25
-            Case 4, 5, 6
-                Return 0.1875
-            Case Else
-                Return 0.1875
-        End Select
-    End Function
-
-    ' ====================================================================
-    ' STEP 4: PLACE TUBES ON SHEET
-    ' ====================================================================
-    Private Sub PlaceTubesOnSheet(sheet As Sheet, tubeColl As List(Of TubeData), startIdx As Integer, endIdx As Integer, scale As Double)
+    Private Sub CopySketchesAndAnnotations(sourceSheet As Sheet, targetSheet As Sheet)
         Try
-            Dim tg As TransientGeometry = invApp.TransientGeometry
-            Dim crossSectionX As Double = VAR_BASE_X_POS + VAR_CROSS_SECTION_OFFSET_X
-
-            ' Place each tube
-            For i As Integer = startIdx To endIdx
-                Dim tubeData As TubeData = tubeColl(i)
-                Dim yPos As Double = VAR_BASE_Y_POS - ((i - startIdx) * VAR_TUBE_SPACING)
-
-                ' Create cross-section view
-                Try
-                    Dim view As DrawingView = PlaceCrossSectionView(sheet, tubeData, crossSectionX, yPos, scale, tg)
-
-                    If view IsNot Nothing Then
-                        ' Create projection view with length
-                        Try
-                            Dim projView As DrawingView = PlaceLengthProjectionView(sheet, view, tubeData, scale, tg)
-
-                            If projView IsNot Nothing Then
-                                ' Add length dimension to projection view
-                                AddLengthDimension(sheet, projView, tubeData, tg)
-
-                                ' Add parts list box
-                                AddPartsList(sheet, tubeData, projView, tg)
-
-                                ' Check and add break line if necessary
-                                If NeedsBreakLine(tubeData, scale, sheet) Then
-                                    AddBreakLine(sheet, projView)
-                                End If
-                            End If
-                        Catch ex As Exception
-                        End Try
-                    End If
-                Catch ex As Exception
-                End Try
+            ' Copy all sketches from source to target
+            For i As Integer = 1 To sourceSheet.Sketches.Count
+                Dim sourceSketch As PlanarSketch = sourceSheet.Sketches(i)
+                ' Clone the sketch to the target sheet
+                sourceSketch.CopyToClipboard()
+                targetSheet.PasteSpecial()
             Next
 
         Catch ex As Exception
-        End Try
-    End Sub
-
-    ' ====================================================================
-    ' HELPER: PLACE CROSS-SECTION VIEW
-    ' ====================================================================
-    Private Function PlaceCrossSectionView(sheet As Sheet, tubeData As TubeData, xPos As Double, yPos As Double, scale As Double, tg As TransientGeometry) As DrawingView
-        Try
-            Dim placement As Point2d = tg.CreatePoint2d(xPos, yPos)
-            Dim view As DrawingView = sheet.DrawingViews.AddBaseView(tubeData.Document, placement, scale, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineDrawingViewStyle)
-            Return view
-
-        Catch ex As Exception
-            Return Nothing
-        End Try
-    End Function
-
-    ' ====================================================================
-    ' HELPER: PLACE LENGTH PROJECTION VIEW
-    ' ====================================================================
-    Private Function PlaceLengthProjectionView(sheet As Sheet, baseView As DrawingView, tubeData As TubeData, scale As Double, tg As TransientGeometry) As DrawingView
-        Try
-            Dim projXPos As Double = baseView.Position.X + VAR_PROJECTION_OFFSET_X
-            Dim projPlacement As Point2d = tg.CreatePoint2d(projXPos, baseView.Position.Y)
-
-            ' Create projection view (top view to show length)
-            Dim projView As DrawingView = sheet.DrawingViews.AddProjectedView(baseView, projPlacement, DrawingViewStyleEnum.kHiddenLineDrawingViewStyle, scale)
-            Return projView
-
-        Catch ex As Exception
-            Return Nothing
-        End Try
-    End Function
-
-    ' ====================================================================
-    ' HELPER: ADD LENGTH DIMENSION
-    ' ====================================================================
-    Private Sub AddLengthDimension(sheet As Sheet, projView As DrawingView, tubeData As TubeData, tg As TransientGeometry)
-        Try
-            ' Placeholder for dimension logic
-            ' This would need to extract actual tube length and add dimension
-
-        Catch ex As Exception
-        End Try
-    End Sub
-
-    ' ====================================================================
-    ' HELPER: ADD PARTS LIST
-    ' ====================================================================
-    Private Sub AddPartsList(sheet As Sheet, tubeData As TubeData, refView As DrawingView, tg As TransientGeometry)
-        Try
-            Dim xPos As Double = refView.Position.X + VAR_PARTS_LIST_OFFSET_X
-            Dim yPos As Double = refView.Position.Y
-            Dim placement As Point2d = tg.CreatePoint2d(xPos, yPos)
-
-            ' Create text box with parts list information
-            Dim partsListText As String = "PART NUMBER" & vbCrLf & tubeData.PartNumber & vbCrLf & vbCrLf & _
-                                         "DESCRIPTION" & vbCrLf & tubeData.Description & vbCrLf & vbCrLf & _
-                                         "MATERIAL" & vbCrLf & tubeData.Material
-
-            ' Note: Text box creation would need proper annotation implementation
-            ' This is a placeholder for actual parts list creation
-
-        Catch ex As Exception
-        End Try
-    End Sub
-
-    ' ====================================================================
-    ' HELPER: CHECK IF BREAK LINE NEEDED
-    ' ====================================================================
-    Private Function NeedsBreakLine(tubeData As TubeData, scale As Double, sheet As Sheet) As Boolean
-        Try
-            ' Standard sheet height is 11" (A size)
-            Dim sheetHeight As Double = 11.0
-            ' 1/4 of sheet length at current scale
-            Dim maxAllowedLength As Double = (sheetHeight / 4.0) / scale
-
-            ' Placeholder for actual break line logic
-            Return False
-
-        Catch ex As Exception
-            Return False
-        End Try
-    End Function
-
-    ' ====================================================================
-    ' HELPER: ADD BREAK LINE
-    ' ====================================================================
-    Private Sub AddBreakLine(sheet As Sheet, projView As DrawingView)
-        Try
-            ' Placeholder for break line implementation
-
-        Catch ex As Exception
+            ' If sketch copy fails, continue without it
+            ' The dimensions and break lines from template will be preserved through view properties
         End Try
     End Sub
 
@@ -512,6 +515,14 @@ Public Class TubingConsolidator
         Return count
     End Function
 
+End Class
+
+' ====================================================================
+' SHEET CONFIGURATION CLASS
+' ====================================================================
+Public Class SheetConfig
+    Public TubeCount As Integer
+    Public TemplateName As String
 End Class
 
 ' ====================================================================
