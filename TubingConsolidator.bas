@@ -24,10 +24,10 @@ Public Class TubingConsolidator
     ' ====================================================================
     Public Sub Main()
         Try
-            ' Get Inventor application
-            invApp = ThisDrawing.Application
+            ' Get Inventor application and document
+            invApp = ThisApplication
             invDoc = ThisDrawing.Document
-            
+
             ' Validate document type
             If invDoc Is Nothing Then
                 MsgBox("Please open a Drawing document first.", "Error")
@@ -412,7 +412,7 @@ Public Class TubingConsolidator
     Private Function PlaceCrossSectionView(sheet As Sheet, tubeData As TubeData, xPos As Double, yPos As Double, scale As Double, tg As TransientGeometry) As DrawingView
         Try
             Dim placement As Point2d = tg.CreatePoint2d(xPos, yPos)
-            Dim view As DrawingView = sheet.DrawingViews.AddBaseView(tubeData.Document, placement, scale, ViewOrientationTypeEnum.kRightViewOrientation)
+            Dim view As DrawingView = sheet.DrawingViews.AddBaseView(tubeData.Document, placement, scale, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineDrawingViewStyle)
             Return view
 
         Catch ex As Exception
