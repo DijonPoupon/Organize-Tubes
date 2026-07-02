@@ -26,7 +26,7 @@ Dim VAR_PARTS_LIST_OFFSET_X As Double
 ' ====================================================================
 ' MAIN ENTRY POINT
 ' ====================================================================
-Sub ConsolidateTubing()
+Sub Main()
     On Error GoTo ErrorHandler
     
     ' Initialize configuration variables
